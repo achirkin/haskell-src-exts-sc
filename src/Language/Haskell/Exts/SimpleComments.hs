@@ -14,7 +14,6 @@ import           Control.Monad                  (forM, forM_, join)
 import           Control.Monad.ST.Strict
 import           Data.Foldable                  (any, foldl')
 import           Data.List                      (sortOn)
-import           Data.Maybe                     (fromMaybe)
 import           Data.STRef
 import           Data.String                    (IsString (..))
 import           Language.Haskell.Exts.Comments
@@ -110,9 +109,7 @@ ppWithCommentsStyleMode sty ppm m'' = runST $ do
           err@ParseFailed {} -> error $ show err
           ParseOk r          -> r
     m :: Module (Maybe CodeComment, SrcSpanInfo)
-    m = fromMaybe
-      ( error "structure of the original and generate-parsed modules differ." )
-      ( apTwins ((,) <$> m'') m' )
+    m = apTwinsDef ((,) Nothing) ((,) <$> m'') m'
     -- check if there is anything to the right from the element
     isShiftRight x = any (isToRight . srcInfoSpan)
       where
