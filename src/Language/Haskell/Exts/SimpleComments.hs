@@ -1,18 +1,23 @@
 {-# LANGUAGE RecordWildCards #-}
 module Language.Haskell.Exts.SimpleComments
-  ( testIt, toExactHaddocked
+  ( -- * Data types
+    CodeComment (..), CommentPos (..)
+    -- * Generate source code
+  , ppWithCommentsStyleMode
+  , ppWithCommentsMode
+  , ppWithComments
+    -- * Convenience functions
+  , preComment, postComment, secComment
   ) where
 
-import           Control.Monad                    (forM, forM_, join)
+import           Control.Monad                  (forM, forM_, join)
 import           Control.Monad.ST.Strict
-import           Data.Foldable                    (foldl')
-import           Data.List                        (sortOn)
-import           Data.Maybe
+import           Data.Foldable                  (any, foldl')
+import           Data.List                      (sortOn)
+import           Data.Maybe                     (fromMaybe)
 import           Data.STRef
-
--- import           Language.Haskell.Exts.Build
+import           Data.String                    (IsString (..))
 import           Language.Haskell.Exts.Comments
-import           Language.Haskell.Exts.ExactPrint
 import           Language.Haskell.Exts.Parser
 import           Language.Haskell.Exts.Pretty
 import           Language.Haskell.Exts.SrcLoc
@@ -21,126 +26,153 @@ import           Language.Haskell.Exts.Syntax
 import           Generics.ApplyTwins
 
 
-testIt :: IO ()
-testIt = do
+-- | Annotate AST with comments.
+data CodeComment
+  = CodeComment
+  { ccPos :: !CommentPos
+    -- ^ How to place comment
+  , ccSym :: !Char
+    -- ^ Special character to prepend to the first line keeping the alignment;
+    --   e.g. '*' for haddock sections, '|' for top-level haddock declarations.
+    --   If ' '(space) is used, no additional indentation is added.
+  , ccTxt :: !String
+    -- ^ Content of a comment (can be multiline)
+  } deriving (Eq, Show, Read)
 
-  let m = Module Nothing
-         (Just $ ModuleHead Nothing
-                            (ModuleName Nothing "GoodModule") Nothing Nothing
-         ) [] []
-          [ TypeSig Nothing [Ident Nothing "func1"] (TyFun Nothing (TyCon Nothing (UnQual Nothing (Ident Nothing "String"))) (TyCon Nothing (UnQual Nothing (Ident Nothing "String"))))
-          , PatBind Nothing (PVar Nothing (Ident Nothing "func1")) (UnGuardedRhs Nothing (LeftSection Nothing (Lit Nothing (String Nothing "asgsd" "asgsd")) (QVarOp Nothing (UnQual Nothing (Symbol Nothing "++"))))) Nothing
-          , DataDecl (Just "This is a data declaration") (DataType Nothing) Nothing (DHead Nothing (Ident Nothing "Hello")) [QualConDecl Nothing Nothing Nothing (ConDecl Nothing (Ident Nothing "HelloA") [])
-          , QualConDecl Nothing Nothing Nothing (ConDecl (Just "HelloB ConDecl") (Ident (Just "HelloB Ident") "HelloB") [])] (Just (Deriving Nothing [IRule Nothing Nothing Nothing (IHCon Nothing (UnQual Nothing (Ident Nothing "Eq")))
-          , IRule Nothing Nothing Nothing (IHCon Nothing (UnQual Nothing (Ident Nothing "Show")))]))
-          , TypeSig (Just "My first comment\naslo multiline!") [Ident Nothing "func2"] (TyFun Nothing (TyCon Nothing (UnQual Nothing (Ident Nothing "Int"))) (TyCon Nothing (UnQual Nothing (Ident Nothing "String"))))
-          , PatBind Nothing (PVar Nothing (Ident Nothing "func2")) (UnGuardedRhs Nothing (Var Nothing (UnQual Nothing (Ident Nothing "show")))) Nothing
-          ]
+instance IsString CodeComment where
+  fromString = CodeComment NextToCode ' '
 
-
-  print $ apTwins ((,) <$> m) (fst $ toExactHaddocked m)
-
-  putStrLn "-----------------"
-  putStrLn $ prettyPrint m
-  putStrLn "-----------------"
-  putStrLn $ uncurry exactPrint . toExactHaddocked $ m
-  putStrLn "-----------------"
+-- | Where to place a comment, relative to an AST node
+data CommentPos = AboveCode | BelowCode | NextToCode
+  deriving (Eq, Show, Read)
 
 
+-- | Add haddock-style comment above some definition
+preComment :: String -> Maybe CodeComment
+preComment "" = Nothing
+preComment s  = Just $ CodeComment AboveCode '|' s
 
-toExactHaddocked :: Module (Maybe String)
-                 -> (Module SrcSpanInfo, [Comment])
-toExactHaddocked m'' = runST $ do
+-- | Add haddock-style comment below some definition
+postComment :: String -> Maybe CodeComment
+postComment "" = Nothing
+postComment s  = Just $ CodeComment BelowCode '^' s
+
+-- | Add haddock-style section ('*'),
+--    use it on definitions in an export list.
+secComment :: String -> Maybe CodeComment
+secComment "" = Nothing
+secComment s  = Just $ CodeComment AboveCode '*' s
+
+
+-- | `ppWithCommentsMode` with default mode
+ppWithComments :: Module (Maybe CodeComment)
+               -> (Module SrcSpanInfo, [Comment])
+ppWithComments = ppWithCommentsMode defaultMode
+
+-- | `ppWithCommentsStyleMode` with default style
+ppWithCommentsMode :: PPHsMode
+                   -> Module (Maybe CodeComment)
+                   -> (Module SrcSpanInfo, [Comment])
+ppWithCommentsMode = ppWithCommentsStyleMode style
+
+-- | Run pretty print and parse to obtain `SrcSpanInfo`,
+--   then gradually insert comments.
+ppWithCommentsStyleMode :: Style
+                        -> PPHsMode
+                        -> Module (Maybe CodeComment)
+                        -> (Module SrcSpanInfo, [Comment])
+ppWithCommentsStyleMode sty ppm m'' = runST $ do
     -- make location info mutable
     mSt <- mapM (\(mt, sloc) -> (,) (sloc, mt) <$> newSTRef sloc) m
     let (allLocRefs, allComments') = foldl' f ([],[]) mSt
           where
-            f (ls, cs) ((_, Nothing), l) = (l:ls, cs)
-            f (ls, cs) ((x, Just c), l)  = (l:ls, (x,(c,l)):cs)
+            f (ls, cs) ((_, Nothing), l)
+              = (l:ls, cs)
+            f (ls, cs) ((x, Just c), l)
+              = let shiftRight = isShiftRight x m'
+                    shiftLoc = snd $ evalLoc (ccPos c) (srcInfoSpan x) shiftRight
+                in (l:ls, (shiftLoc, (c, l, shiftRight)):cs)
         -- sort comments by their location, so that insertion of earlier comments
         -- does not affect the position of later comments.
-        allComments = map snd $ sortOn fst allComments'
+        allComments = map snd $ sortOn fst $ reverse allComments'
     -- update all locations for each comment
-    ccs <- forM allComments $ \(comment, locref) -> do
+    ccs <- forM allComments $ \(comment, locref, shiftRight) -> do
       loc <- readSTRef locref
-      let cSpan = srcInfoSpan loc
-          (updateLoc, cs) = insertPostComments comment cSpan
+      let (comLoc, shiftLoc) = evalLoc (ccPos comment) (srcInfoSpan loc) shiftRight
+          (updateLoc, cs) = insertComments comLoc shiftLoc comment
       forM_ allLocRefs $ flip modifySTRef updateLoc
       return cs
     mFin <- mapM (readSTRef . snd) mSt
     return (mFin, join ccs)
   where
     m' :: Module SrcSpanInfo
-    m' = case parseModule $ prettyPrint m'' of
+    m' = case parseModule $ prettyPrintStyleMode sty ppm m'' of
           err@ParseFailed {} -> error $ show err
           ParseOk r          -> r
-    m :: Module (Maybe String, SrcSpanInfo)
+    m :: Module (Maybe CodeComment, SrcSpanInfo)
     m = fromMaybe
       ( error "structure of the original and generate-parsed modules differ." )
       ( apTwins ((,) <$> m'') m' )
+    -- check if there is anything to the right from the element
+    isShiftRight x = any (isToRight . srcInfoSpan)
+      where
+        s = srcInfoSpan x
+        isToRight z = srcSpanEndLine s == srcSpanStartLine z
+                   && srcSpanEndColumn s <= srcSpanStartColumn z
 
 
 
-
--- | Insert comments above codepoints
-insertPreComments :: String
-                  -> SrcSpan -- ^ location of an element
-                             --   for comments to be attached
-                  -> (SrcSpanInfo -> SrcSpanInfo, [Comment])
-insertPreComments txt locs = (f, cmts)
+insertComments :: SrcLoc
+                  -- ^ Start position of a comment
+               -> SrcLoc
+                  -- ^ A point where to start code displacement
+               -> CodeComment
+                  -- ^ comment itself
+               -> (SrcSpanInfo -> SrcSpanInfo, [Comment])
+                  -- ^ a function that modifies the code locations
+                  --   and a list of `haskell-src-exts` comments.
+insertComments cmtLoc@(SrcLoc _ startL _)
+                      (SrcLoc _ shiftL shiftC) com = (f, cmts)
   where
-    cmtLoc = SrcLoc (srcSpanFilename locs)
-                    startL
-                    startC
-    cmts = mkComments cmtLoc '|' txt
-    startL = srcSpanStartLine locs
-    startC = srcSpanStartColumn locs
-    lineN = length cmts
+    cmts = mkComments cmtLoc (ccSym com) (ccTxt com)
+    lineN = length cmts + startL - shiftL
     f SrcSpanInfo {srcInfoSpan = s, srcInfoPoints = ps}
       = SrcSpanInfo
       { srcInfoSpan = g s, srcInfoPoints = fmap g ps }
-    g s | srcSpanEndLine s < startL ||
-          srcSpanStartLine s == startL && srcSpanEndColumn s < startC
+    g s | srcSpanEndLine s < shiftL ||
+          srcSpanStartLine s == shiftL && srcSpanEndColumn s < shiftC
           = s
-        | srcSpanStartLine s > startL ||
-          srcSpanStartLine s == startL && srcSpanEndColumn s >= startC
+        | srcSpanStartLine s > shiftL ||
+          srcSpanStartLine s == shiftL && srcSpanStartColumn s >= shiftC - 1
           = s { srcSpanStartLine = srcSpanStartLine s + lineN
               , srcSpanEndLine = srcSpanEndLine s + lineN
               }
         | otherwise
           = s { srcSpanEndLine = srcSpanEndLine s + lineN }
 
-
--- | Insert comments right and below codepoints
---    (further along the flow of the program)
-insertPostComments :: String
-                   -> SrcSpan -- ^ location of an element
-                              --   for comments to be attached
-                   -> (SrcSpanInfo -> SrcSpanInfo, [Comment])
-insertPostComments txt locs = (f, cmts)
+-- | Determine the position of a comment
+evalLoc :: CommentPos -- ^ relative position of a comment
+        -> SrcSpan    -- ^ position of a node
+        -> Bool -- ^ if there is anything that goes after the node in its line
+        -> (SrcLoc, SrcLoc)
+evalLoc AboveCode SrcSpan {..} _ = ( loc, loc )
   where
-    cmtLoc = SrcLoc (srcSpanFilename locs)
-                    startL
-                    startC
-    cmts = mkComments cmtLoc '^' txt
-    startL = srcSpanEndLine locs
-    startC = srcSpanEndColumn locs + 1
-    lineN = length cmts
-    f SrcSpanInfo {srcInfoSpan = s, srcInfoPoints = ps}
-      = SrcSpanInfo
-      { srcInfoSpan = g s, srcInfoPoints = fmap g ps }
-    g s | srcSpanEndLine s < startL ||
-          srcSpanStartLine s == startL && srcSpanEndColumn s < startC
-          = s
-        | srcSpanStartLine s > startL ||
-          srcSpanStartLine s == startL && srcSpanEndColumn s >= startC
-          = s { srcSpanStartLine = srcSpanStartLine s + lineN
-              , srcSpanEndLine = srcSpanEndLine s + lineN
-              }
-        | otherwise
-          = s { srcSpanEndLine = srcSpanEndLine s + lineN }
-
-
+    loc = SrcLoc srcSpanFilename srcSpanStartLine srcSpanStartColumn
+evalLoc BelowCode SrcSpan {..} shiftRight = (locStart, locShift )
+  where
+    locStart = SrcLoc srcSpanFilename (srcSpanEndLine + 1) $
+             if srcSpanStartLine == srcSpanEndLine
+             then srcSpanStartColumn
+             else min srcSpanStartColumn srcSpanEndColumn
+    locShift = if shiftRight
+               then SrcLoc srcSpanFilename srcSpanEndLine (srcSpanEndColumn + 1)
+               else locStart { srcColumn = 1 }
+evalLoc NextToCode SrcSpan {..} shiftRight = (locStart, locShift)
+  where
+    locStart = SrcLoc srcSpanFilename srcSpanEndLine (srcSpanEndColumn + 1)
+    locShift = if shiftRight
+               then locStart
+               else SrcLoc srcSpanFilename (srcSpanEndLine + 1) 1
 
 -- | Make a textual comment into a documentation.
 mkComments :: SrcLoc -- ^ location of the comment start
@@ -152,7 +184,7 @@ mkComments SrcLoc {..} c txt = mkComment srcLine lns
     lns = indent $ lines txt
     indent []     = []
     indent (x:xs) = if c == ' '
-                    then x:xs
+                    then map (' ':) (x:xs)
                     else (' ':c:' ':x) : map ("   " ++) xs
     mkComment _ [] = []
     mkComment i (x:xs)
