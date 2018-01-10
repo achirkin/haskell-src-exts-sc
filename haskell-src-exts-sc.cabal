@@ -1,7 +1,9 @@
 name:                haskell-src-exts-sc
 version:             0.1.0.0
 synopsis:            Pretty print haskell code with comments
-description:         Generate code from haskell-src-exts AST
+description:
+  Generate code from haskell-src-exts AST.
+  To do it, I pretty print and parse AST, then adjust it to insert comments.
 homepage:            https://github.com/achirkin/haskell-src-exts-sc#readme
 license:             BSD3
 license-file:        LICENSE
@@ -16,7 +18,7 @@ cabal-version:       >=1.10
 flag build-example
     description:
         Build an example executable.
-    default: True
+    default: False
 
 library
   hs-source-dirs:      src
