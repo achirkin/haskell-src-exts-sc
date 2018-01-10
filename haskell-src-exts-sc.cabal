@@ -1,5 +1,5 @@
 name:                haskell-src-exts-sc
-version:             0.1.0.0
+version:             0.1.0.1
 synopsis:            Pretty print haskell code with comments
 description:
   Generate code from haskell-src-exts AST.
