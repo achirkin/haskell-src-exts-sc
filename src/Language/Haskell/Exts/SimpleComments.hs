@@ -3,6 +3,7 @@ module Language.Haskell.Exts.SimpleComments
   ( -- * Data types
     CodeComment (..), CommentPos (..)
     -- * Generate source code
+  , ppWithCommentsStyleModeParseMode
   , ppWithCommentsStyleMode
   , ppWithCommentsMode
   , ppWithComments
@@ -10,13 +11,14 @@ module Language.Haskell.Exts.SimpleComments
   , preComment, postComment, secComment
   ) where
 
-import           Control.Monad                  (forM, forM_, join)
+import           Control.Monad                   (forM, forM_, join)
 import           Control.Monad.ST.Strict
-import           Data.Foldable                  (any, foldl')
-import           Data.List                      (sortOn)
+import           Data.Foldable                   (any, foldl')
+import           Data.List                       (sortOn)
 import           Data.STRef
-import           Data.String                    (IsString (..))
+import           Data.String                     (IsString (..))
 import           Language.Haskell.Exts.Comments
+import           Language.Haskell.Exts.Extension
 import           Language.Haskell.Exts.Parser
 import           Language.Haskell.Exts.Pretty
 import           Language.Haskell.Exts.SrcLoc
@@ -74,13 +76,23 @@ ppWithCommentsMode :: PPHsMode
                    -> (Module SrcSpanInfo, [Comment])
 ppWithCommentsMode = ppWithCommentsStyleMode style
 
--- | Run pretty print and parse to obtain `SrcSpanInfo`,
---   then gradually insert comments.
+
+-- | `ppWithCommentsStyleModeParseMode` with default parse style
 ppWithCommentsStyleMode :: Style
                         -> PPHsMode
                         -> Module (Maybe CodeComment)
                         -> (Module SrcSpanInfo, [Comment])
-ppWithCommentsStyleMode sty ppm m'' = runST $ do
+ppWithCommentsStyleMode sty ppm
+  = ppWithCommentsStyleModeParseMode sty ppm defaultParseMode
+
+-- | Run pretty print and parse to obtain `SrcSpanInfo`,
+--   then gradually insert comments.
+ppWithCommentsStyleModeParseMode :: Style
+                                 -> PPHsMode
+                                 -> ParseMode
+                                 -> Module (Maybe CodeComment)
+                                 -> (Module SrcSpanInfo, [Comment])
+ppWithCommentsStyleModeParseMode sty ppm parsem' m'' = runST $ do
     -- make location info mutable
     mSt <- mapM (\(mt, sloc) -> (,) (sloc, mt) <$> newSTRef sloc) m
     let (allLocRefs, allComments') = foldl' f ([],[]) mSt
@@ -105,7 +117,7 @@ ppWithCommentsStyleMode sty ppm m'' = runST $ do
     return (mFin, join ccs)
   where
     m' :: Module SrcSpanInfo
-    m' = case parseModule $ prettyPrintStyleMode sty ppm m'' of
+    m' = case parseModuleWithMode parsem $ prettyPrintStyleMode sty ppm m'' of
           err@ParseFailed {} -> error $ show err
           ParseOk r          -> r
     m :: Module (Maybe CodeComment, SrcSpanInfo)
@@ -116,7 +128,18 @@ ppWithCommentsStyleMode sty ppm m'' = runST $ do
         s = srcInfoSpan x
         isToRight z = srcSpanEndLine s == srcSpanStartLine z
                    && srcSpanEndColumn s <= srcSpanStartColumn z
-
+    parsem = parsem' { extensions = extensions parsem' ++ getPragmas m''}
+    getPragmas (Module _ _ xs _ _)
+      = classifyExtension . getNContent <$> getLPragmas xs
+    getPragmas (XmlPage _ _ xs _ _ _ _)
+      = classifyExtension . getNContent <$> getLPragmas xs
+    getPragmas (XmlHybrid _ _ xs _ _ _ _ _ _)
+      = classifyExtension . getNContent <$> getLPragmas xs
+    getLPragmas []                         = []
+    getLPragmas (LanguagePragma _ xs : ps) = xs ++ getLPragmas ps
+    getLPragmas (_:ps)                     = getLPragmas ps
+    getNContent (Ident _ s)  = s
+    getNContent (Symbol _ s) = s
 
 
 insertComments :: SrcLoc
