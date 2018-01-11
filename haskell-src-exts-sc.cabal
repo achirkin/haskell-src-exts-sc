@@ -9,7 +9,7 @@ license:             BSD3
 license-file:        LICENSE
 author:              Artem Chirkin
 maintainer:          chirkin@arch.ethz.ch
-copyright:           Copyright: (c) 2017 Artem Chirkin
+copyright:           Copyright: (c) 2018 Artem Chirkin
 category:            bsd3, library, language
 build-type:          Simple
 extra-source-files:  README.md
