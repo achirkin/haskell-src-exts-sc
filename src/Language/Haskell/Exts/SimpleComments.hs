@@ -163,7 +163,22 @@ insertComments cmtLoc@(SrcLoc _ startL _)
           srcSpanStartLine s == shiftL && srcSpanEndColumn s < shiftC
           = s
         | srcSpanStartLine s > shiftL ||
-          srcSpanStartLine s == shiftL && srcSpanStartColumn s >= shiftC - 1
+          -- This is a problematic condition: from which column we move code?
+          -- Consider two cases commenting b:
+          --   (srcSpanStartColumn>=shiftC)  (srcSpanStartColumn>=shiftC-1)
+          --    a+b
+          -- => a+-- comment is broken       a -- comment is good
+          --                                  +b
+          --
+          --    a + (b - c)
+          -- => a + (-- comment is good      a -- comment is misplaced
+          --         b - c)                   (b - c)
+          --
+          -- ATM, I have chosen the left column, because:
+          --   * Autogen code seem to put spaces between operators
+          --   * Autogen code seem to not put spaces inside parentheses
+          --   * Another variant breaks haddock in export lists
+          srcSpanStartLine s == shiftL && srcSpanStartColumn s >= shiftC
           = s { srcSpanStartLine = srcSpanStartLine s + lineN
               , srcSpanEndLine = srcSpanEndLine s + lineN
               }
