@@ -123,7 +123,9 @@ ppWithCommentsStyleModeParseMode sty ppm parsem' m'' = runST $ do
     m :: Module (Maybe CodeComment, SrcSpanInfo)
     m = apTwinsDef ((,) Nothing) ((,) <$> m'') m'
     -- check if there is anything to the right from the element
-    isShiftRight x = any (isToRight . srcInfoSpan)
+    isShiftRight x = any (\y -> isToRight (srcInfoSpan y)
+                             || any isToRight (srcInfoPoints y)
+                         )
       where
         s = srcInfoSpan x
         isToRight z = srcSpanEndLine s == srcSpanStartLine z
