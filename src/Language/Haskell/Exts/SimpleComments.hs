@@ -111,7 +111,7 @@ ppWithCommentsStyleModeParseMode sty ppm parsem' m'' = runST $ do
       loc <- readSTRef locref
       let (comLoc, shiftLoc) = evalLoc (ccPos comment) (srcInfoSpan loc) shiftRight
           (updateLoc, cs) = insertComments comLoc shiftLoc comment
-      forM_ allLocRefs $ flip modifySTRef updateLoc
+      forM_ allLocRefs $ flip modifySTRef' updateLoc
       return cs
     mFin <- mapM (readSTRef . snd) mSt
     return (mFin, join ccs)
@@ -159,8 +159,14 @@ insertComments cmtLoc@(SrcLoc _ startL _)
     cmts = mkComments cmtLoc (ccSym com) (ccTxt com)
     lineN = length cmts + startL - shiftL
     f SrcSpanInfo {srcInfoSpan = s, srcInfoPoints = ps}
-      = SrcSpanInfo
-      { srcInfoSpan = g s, srcInfoPoints = fmap g ps }
+      = let gs = g s
+            mapps _ [] = []
+            mapps k (x : xs) = let gp = k x
+                                   gps = mapps k xs
+                               in gp `seq` gps `seq` gp : gps
+            fmapgps = mapps g ps
+        in gs `seq` fmapgps `seq` SrcSpanInfo
+             { srcInfoSpan = gs, srcInfoPoints = fmapgps }
     g s | srcSpanEndLine s < shiftL ||
           srcSpanStartLine s == shiftL && srcSpanEndColumn s < shiftC
           = s
