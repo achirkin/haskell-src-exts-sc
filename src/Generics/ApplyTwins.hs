@@ -3,6 +3,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TypeFamilies          #-}
 {-# LANGUAGE TypeOperators         #-}
+{-# LANGUAGE UndecidableInstances  #-}
 module Generics.ApplyTwins
   ( ApplyTwins (), apTwins
   , ApplyTwinsDef (), GMap (), apTwinsDef
